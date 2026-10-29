@@ -1,0 +1,19 @@
+{
+  "activeStoreId": "mi-tienda",
+  "stores": [
+    {
+      "id": "mi-tienda",
+      "name": "Mi Tienda Ejemplo",
+      "shopifyShopDomain": "mi-tienda.myshopify.com",
+      "shopifyClientId": "tu_shopify_client_id_aqui",
+      "shopifyClientSecret": "shpss_tu_shopify_client_secret_aqui",
+      "shopifyAccessToken": "",
+      "shopifyApiVersion": "2024-01",
+      "wooStoreUrl": "https://mitiendawoo.com",
+      "wooConsumerKey": "ck_tu_consumer_key_aqui",
+      "wooConsumerSecret": "cs_tu_consumer_secret_aqui",
+      "defaultCountry": "CO",
+      "defaultCurrency": "COP"
+    }
+  ]
+}

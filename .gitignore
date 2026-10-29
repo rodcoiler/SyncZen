@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Secrets & Local Configurations
+.env
+stores.json
+
+# Compressed files & logs
+*.tar.gz
+*.log
+.DS_Store
+Thumbs.db
