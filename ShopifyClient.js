@@ -384,6 +384,57 @@ class ShopifyClient {
     if (params.since_id) query += `&since_id=${params.since_id}`;
     return await this.rest(`orders.json?${query}`);
   }
+
+  /**
+   * Obtiene todos los IDs de pedidos de WooCommerce ya importados a Shopify (vía tags WooOrder-*)
+   */
+  async getExistingWooOrderIds() {
+    const existingIds = new Set();
+    let hasNextPage = true;
+    let cursor = null;
+
+    while (hasNextPage) {
+      const cursorArg = cursor ? `, after: "${cursor}"` : '';
+      const query = `{
+        orders(first: 250, query: "tag:WooCommerce"${cursorArg}) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          edges {
+            node {
+              tags
+            }
+          }
+        }
+      }`;
+
+      try {
+        const res = await this.graphql(query);
+        const ordersData = res?.data?.orders;
+        const edges = ordersData?.edges || [];
+
+        for (const edge of edges) {
+          const tags = edge.node?.tags || [];
+          for (const t of tags) {
+            if (t.startsWith('WooOrder-')) {
+              existingIds.add(t.replace('WooOrder-', '').trim());
+            }
+          }
+        }
+
+        hasNextPage = Boolean(ordersData?.pageInfo?.hasNextPage);
+        cursor = ordersData?.pageInfo?.endCursor;
+
+        if (edges.length === 0 || !cursor) break;
+      } catch (err) {
+        console.warn('[ShopifyClient] Error al consultar pedidos existentes para deduplicación:', err.message);
+        break;
+      }
+    }
+
+    return existingIds;
+  }
 }
 
 module.exports = ShopifyClient;

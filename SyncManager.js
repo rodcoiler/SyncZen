@@ -510,6 +510,16 @@ class SyncManager {
     }
 
     this.log(`Iniciando sincronización de pedidos WooCommerce ➔ Shopify [${storeName}]... ${options.startDate ? `(Desde: ${options.startDate})` : ''} ${options.endDate ? `(Hasta: ${options.endDate})` : ''}`);
+
+    this.log(`Consultando pedidos ya importados en Shopify para evitar duplicados...`);
+    let existingWooOrderIds = new Set();
+    try {
+      existingWooOrderIds = await this.shopify.getExistingWooOrderIds();
+      this.log(`Se detectaron ${existingWooOrderIds.size} pedidos de WooCommerce ya registrados en Shopify.`);
+    } catch (e) {
+      this.log(`Aviso: No se pudo precargar la lista de pedidos existentes: ${e.message}`, 'warn');
+    }
+
     let page = 1;
     let total = 0;
 
@@ -537,6 +547,12 @@ class SyncManager {
           break;
         }
 
+        const wooOrderId = String(o.order_number || o.number || o.id);
+        if (existingWooOrderIds.has(wooOrderId)) {
+          this.stats.ordersSkipped++;
+          continue;
+        }
+
         try {
           const billing = o.billing || {};
           const shipping = o.shipping || {};
@@ -559,17 +575,25 @@ class SyncManager {
             sku: item.sku || ''
           }));
 
-          const noteParts = [`Importado de WooCommerce Pedido #${o.order_number || o.number || o.id}`];
+          const noteParts = [`Importado de WooCommerce Pedido #${wooOrderId}`];
+          if (o.status) noteParts.push(`Estado Woo: ${o.status}`);
           if (billing.cpf) noteParts.push(`Doc/CPF: ${billing.cpf}`);
           if (billing.state) noteParts.push(`DANE/State: ${billing.state}`);
           if (o.payment_method_title) noteParts.push(`Pago: ${o.payment_method_title}`);
 
+          const isPaid = (
+            o.status === 'completed' ||
+            o.status === 'processing' ||
+            o.status === 'pago-mercadopago' ||
+            Boolean(o.date_paid)
+          );
+
           const payload = {
-            financial_status: (o.status === 'completed' || o.date_paid) ? 'paid' : 'pending',
+            financial_status: isPaid ? 'paid' : 'pending',
             currency: orderCurrency,
             total_price: o.total,
             note: noteParts.join(' | '),
-            tags: `WooCommerce, DereneSync, ${storeName}, WooOrder-${o.order_number || o.number || o.id}`,
+            tags: `WooCommerce, DereneSync, ${storeName}, WooOrder-${wooOrderId}`,
             send_receipt: false,
             send_fulfillment_receipt: false,
             inventory_behaviour: 'bypass',
@@ -621,7 +645,11 @@ class SyncManager {
             payload.shipping_address = shipObj;
           }
 
-          if (o.date_created) {
+          if (o.date_created_gmt) {
+            const isoDate = new Date(`${o.date_created_gmt}Z`).toISOString();
+            payload.created_at = isoDate;
+            payload.processed_at = isoDate;
+          } else if (o.date_created) {
             const isoDate = new Date(o.date_created).toISOString();
             payload.created_at = isoDate;
             payload.processed_at = isoDate;
@@ -639,9 +667,10 @@ class SyncManager {
             }
           }
 
+          existingWooOrderIds.add(wooOrderId);
           this.stats.ordersSynced++;
           total++;
-          this.log(`Pedido transferido: #${o.order_number || o.number || o.id} - ${firstName} ${lastName} (${orderCurrency} ${o.total})`);
+          this.log(`Pedido transferido: #${wooOrderId} - ${firstName} ${lastName} (${orderCurrency} ${o.total}) [Woo: ${o.status}]`);
         } catch (err) {
           this.log(`Error al transferir pedido #${o.id || o.number}: ${err.message}`, 'error');
           this.stats.errorsCount++;
@@ -653,7 +682,7 @@ class SyncManager {
       if (orders.length < 50 || this.stopRequested) break;
     }
 
-    this.log(`Sincronización de pedidos completada. Total procesados: ${total}`);
+    this.log(`Sincronización de pedidos completada. Total nuevos transferidos: ${total}, Ya existentes omitidos: ${this.stats.ordersSkipped}`);
     return total;
   }
 

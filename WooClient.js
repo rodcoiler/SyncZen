@@ -143,7 +143,18 @@ class WooClient {
   }
 
   async getOrders(page = 1, perPage = 50, options = {}) {
-    let query = `page=${page}&per_page=${perPage}&status=completed,processing`;
+    const defaultStatuses = 'processing,completed,transferencia,addi_payment,pago-mercadopago,contra-entrega,on-hold,pending,contactado,recoge-tienda';
+    const statusFilter = options.orderStatus || options.status;
+    let query = `page=${page}&per_page=${perPage}`;
+
+    if (!statusFilter || statusFilter === 'active') {
+      query += `&status=${encodeURIComponent(defaultStatuses)}`;
+    } else if (statusFilter === 'any' || statusFilter === 'all') {
+      query += `&status=any`;
+    } else {
+      query += `&status=${encodeURIComponent(statusFilter)}`;
+    }
+
     if (options.startDate) {
       const dt = options.startDate.includes('T') ? options.startDate : `${options.startDate}T00:00:00`;
       query += `&after=${encodeURIComponent(dt)}`;

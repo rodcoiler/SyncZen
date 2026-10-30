@@ -598,6 +598,24 @@
         </div>
       </div>
 
+      <!-- Opciones Avanzadas de Pedidos -->
+      <div class="date-filter-box" style="margin-bottom: 16px; background: rgba(255,255,255,0.03);">
+        <div class="date-filter-header">
+          <span>🛒 Filtro de Estados de Pedidos</span>
+          <span style="font-size: 12px; font-weight: 400; color: var(--text-muted);">Define qué estados de pedidos de WooCommerce sincronizar</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 10px;">
+          <div class="date-group" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+            <label style="font-size: 11px; font-weight: 700; color: var(--text-muted);">Estados en WooCommerce:</label>
+            <select id="syncOrderStatus" class="form-control">
+              <option value="active" selected>Pedidos Activos (Transferencia, Addi, MercadoPago, Contra-entrega, En espera) [Recomendado]</option>
+              <option value="processing,completed">Solo Completados y Procesando (Estricto)</option>
+              <option value="any">Todos los Estados (Incluye Cancelados y Fallidos)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <!-- Filtro de Fechas -->
       <div class="date-filter-box">
         <div class="date-filter-header">
@@ -881,6 +899,7 @@
       const endDate = document.getElementById('endDate').value;
       const direction = document.getElementById('syncDirection') ? document.getElementById('syncDirection').value : 'woo_to_shopify';
       const productStatus = document.getElementById('syncProductStatus') ? document.getElementById('syncProductStatus').value : 'publish';
+      const orderStatus = document.getElementById('syncOrderStatus') ? document.getElementById('syncOrderStatus').value : 'active';
       const onExisting = document.getElementById('syncOnExisting') ? document.getElementById('syncOnExisting').value : 'skip';
       const onMissing = document.getElementById('syncOnMissing') ? document.getElementById('syncOnMissing').value : 'create';
 
@@ -889,6 +908,7 @@
         endDate: endDate ? `${endDate}T23:59:59` : null,
         direction,
         productStatus,
+        orderStatus,
         onExisting,
         onMissing
       };
