@@ -264,6 +264,14 @@ class ShopifyClient {
                       title
                       price
                       inventoryQuantity
+                      metafields(first: 10, namespace: "dumashe") {
+                        edges {
+                          node {
+                            key
+                            value
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -341,6 +349,39 @@ class ShopifyClient {
       method: 'PUT',
       body: { product: productData }
     });
+  }
+
+  async updateVariant(variantId, variantData) {
+    const id = variantId.toString().replace(/\D/g, '');
+    return await this.rest(`variants/${id}.json`, {
+      method: 'PUT',
+      body: { variant: { id: parseInt(id), ...variantData } }
+    });
+  }
+
+  async setMetafieldsBatch(metafields = []) {
+    if (!Array.isArray(metafields) || metafields.length === 0) return;
+    const mutation = `
+      mutation SetMetafields($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `;
+    for (let i = 0; i < metafields.length; i += 25) {
+      const chunk = metafields.slice(i, i + 25);
+      const res = await this.graphql(mutation, { metafields: chunk });
+      const errors = res?.data?.metafieldsSet?.userErrors || [];
+      if (errors.length > 0) {
+        console.warn('[ShopifyClient] Errores en metafieldsSet:', JSON.stringify(errors));
+      }
+      if (i + 25 < metafields.length) {
+        await this.sleep(200);
+      }
+    }
   }
 
   async deleteProduct(productId) {

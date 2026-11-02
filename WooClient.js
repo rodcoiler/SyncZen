@@ -142,6 +142,38 @@ class WooClient {
     return await res.json();
   }
 
+  async getProductVariations(productId) {
+    const allVariations = [];
+    let page = 1;
+    while (true) {
+      const query = `page=${page}&per_page=100`;
+      if (this.basicAuthHeader) {
+        const res = await fetch(`${this.storeUrl}/wp-json/wc/v3/products/${productId}/variations?${query}`, {
+          headers: { 'Authorization': this.basicAuthHeader }
+        });
+        if (res.ok) {
+          const batch = await res.json();
+          if (!Array.isArray(batch) || batch.length === 0) break;
+          allVariations.push(...batch);
+          if (batch.length < 100) break;
+          page++;
+          continue;
+        }
+      }
+
+      const res = await fetch(`${this.storeUrl}/wp-json/derene-sync/v1/products/${productId}/variations?${query}`, {
+        headers: this.pluginSecret ? { 'X-Derene-Secret': this.pluginSecret } : {}
+      });
+      if (!res.ok) break;
+      const batch = await res.json();
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      allVariations.push(...batch);
+      if (batch.length < 100) break;
+      page++;
+    }
+    return allVariations;
+  }
+
   async getOrders(page = 1, perPage = 50, options = {}) {
     const defaultStatuses = 'processing,completed,transferencia,addi_payment,pago-mercadopago,contra-entrega,on-hold,pending,contactado,recoge-tienda';
     const statusFilter = options.orderStatus || options.status;

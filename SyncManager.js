@@ -353,6 +353,64 @@ class SyncManager {
   }
 
   // ==========================================
+  // Utilidades de Precios Mayoristas (Precios 2, 3 y 4)
+  // ==========================================
+  extractTierPrices(metaData = [], fallbackMetaData = []) {
+    const prices = { price_2: null, price_3: null, price_4: null };
+    const parseFromList = (list) => {
+      if (!Array.isArray(list)) return;
+      for (const m of list) {
+        if (!m || !m.key) continue;
+        const key = m.key.toString().toLowerCase().trim();
+        const rawVal = m.value != null ? String(m.value).trim() : '';
+        if (!rawVal || isNaN(Number(rawVal)) || Number(rawVal) <= 0) continue;
+        const formatted = parseFloat(rawVal).toFixed(1);
+
+        if ((key === 'variable_price_2' || key === '_variable_price_2' || key === 'price_2') && !prices.price_2) {
+          prices.price_2 = formatted;
+        } else if ((key === 'variable_price_3' || key === '_variable_price_3' || key === 'price_3') && !prices.price_3) {
+          prices.price_3 = formatted;
+        } else if ((key === 'variable_price_4' || key === '_variable_price_4' || key === 'price_4') && !prices.price_4) {
+          prices.price_4 = formatted;
+        }
+      }
+    };
+
+    parseFromList(metaData);
+    parseFromList(fallbackMetaData);
+    return prices;
+  }
+
+  buildRestMetafields(tierPrices = {}) {
+    const list = [];
+    if (tierPrices.price_2) {
+      list.push({ namespace: 'dumashe', key: 'price_2', value: tierPrices.price_2, type: 'number_decimal' });
+    }
+    if (tierPrices.price_3) {
+      list.push({ namespace: 'dumashe', key: 'price_3', value: tierPrices.price_3, type: 'number_decimal' });
+    }
+    if (tierPrices.price_4) {
+      list.push({ namespace: 'dumashe', key: 'price_4', value: tierPrices.price_4, type: 'number_decimal' });
+    }
+    return list;
+  }
+
+  buildGraphqlMetafields(ownerId, tierPrices = {}) {
+    if (!ownerId) return [];
+    const list = [];
+    if (tierPrices.price_2) {
+      list.push({ ownerId, namespace: 'dumashe', key: 'price_2', value: tierPrices.price_2, type: 'number_decimal' });
+    }
+    if (tierPrices.price_3) {
+      list.push({ ownerId, namespace: 'dumashe', key: 'price_3', value: tierPrices.price_3, type: 'number_decimal' });
+    }
+    if (tierPrices.price_4) {
+      list.push({ ownerId, namespace: 'dumashe', key: 'price_4', value: tierPrices.price_4, type: 'number_decimal' });
+    }
+    return list;
+  }
+
+  // ==========================================
   // Sincronización de Productos (Woo ➔ Shopify)
   // ==========================================
   async syncProducts(options = {}) {
@@ -370,14 +428,32 @@ class SyncManager {
     this.log(`Iniciando sincronización de productos WooCommerce ➔ Shopify [${storeName}]...`);
     this.log(`Configuración: Estado origen = "${productStatus}", Si ya existe = "${onExisting}", Si no existe = "${onMissing}"`);
 
-    // 1. Cargar catálogo de SKUs existentes en Shopify
-    this.log('🔍 Cargando índice de SKUs existentes en Shopify...');
-    let existingSkus = new Set();
+    // 1. Cargar índice completo de productos, variantes, SKUs y títulos de Shopify
+    this.log('🔍 Analizando catálogo existente en Shopify (SKUs, variaciones y precios 2/3)...');
+    const existingSkus = new Set();
+    const skuToVariant = new Map();
+    const titleToProduct = new Map();
+
     try {
-      existingSkus = await this.shopify.getAllExistingSkus();
-      this.log(`✅ Catálogo de Shopify analizado: ${existingSkus.size} SKUs detectados.`);
+      const shopifyCatalog = await this.shopify.getAllProducts();
+      for (const sp of shopifyCatalog) {
+        const normTitle = (sp.title || '').trim().toLowerCase();
+        const existingByTitle = titleToProduct.get(normTitle);
+        // Preferir la publicación que tiene múltiples variantes o SKUs válidos
+        if (!existingByTitle || (sp.variants.length > existingByTitle.variants.length) || (sp.skus.length > existingByTitle.skus.length)) {
+          titleToProduct.set(normTitle, sp);
+        }
+        for (const v of sp.variants || []) {
+          const vSku = (v.sku || '').trim().toLowerCase();
+          if (vSku) {
+            existingSkus.add(vSku);
+            skuToVariant.set(vSku, { product: sp, variant: v });
+          }
+        }
+      }
+      this.log(`✅ Catálogo de Shopify indexado: ${shopifyCatalog.length} productos y ${existingSkus.size} SKUs detectados.`);
     } catch (skuErr) {
-      this.log(`Aviso al cargar SKUs en lote: ${skuErr.message}.`, 'warn');
+      this.log(`Aviso al indexar catálogo de Shopify: ${skuErr.message}.`, 'warn');
     }
 
     let page = 1;
@@ -409,42 +485,13 @@ class SyncManager {
         }
 
         try {
+          const normTitle = (p.name || '').trim().toLowerCase();
           const rawSku = (p.sku || '').trim();
           const lowerSku = rawSku.toLowerCase();
+          const isVariable = p.type === 'variable' || (Array.isArray(p.variations) && p.variations.length > 0);
 
-          let skuExists = false;
-          if (lowerSku && existingSkus.has(lowerSku)) {
-            skuExists = true;
-          } else if (rawSku) {
-            skuExists = await this.shopify.checkSkuExists(rawSku);
-          }
-
-          // Caso 1: El producto ya existe en Shopify
-          if (skuExists) {
-            if (onExisting === 'skip') {
-              this.stats.productsSkipped++;
-              this.log(`⏭️ [OMITIDO] Producto "${p.name}" (SKU: "${rawSku}") ya existe en Shopify. No se modifica.`, 'info');
-              continue;
-            }
-
-            // Si se seleccionó actualizar
-            this.stats.productsUpdated++;
-            totalUpdated++;
-            this.log(`🔄 [ACTUALIZADO] Producto "${p.name}" (SKU: "${rawSku}") actualizado en Shopify.`);
-            continue;
-          }
-
-          // Caso 2: El producto NO existe en Shopify
-          if (onMissing === 'skip') {
-            this.stats.productsSkipped++;
-            this.log(`⏭️ [OMITIDO] Producto "${p.name}" no existe en destino y se configuró omitir no existentes.`, 'info');
-            continue;
-          }
-
-          // Crear producto nuevo
           const vendor = (p.brands && p.brands.length) ? p.brands[0].name : (storeName || 'General');
           const productType = (p.categories && p.categories.length) ? p.categories[0].name : 'General';
-          const stockQty = p.stock_quantity != null ? p.stock_quantity : (p.stock != null ? p.stock : 0);
 
           const rawImages = p.images || [];
           const formattedImages = rawImages.map(img => {
@@ -461,6 +508,265 @@ class SyncManager {
             p.tags.forEach(t => { if (t.name) tagsList.push(t.name); });
           }
 
+          // ==========================================
+          // PRODUCTO VARIABLE (Con Variaciones en 1 Sola Publicación)
+          // ==========================================
+          if (isVariable) {
+            const wooVariations = await this.woo.getProductVariations(p.id);
+            const activeVars = wooVariations.filter(v => !v.status || v.status === 'publish');
+
+            if (activeVars.length === 0) {
+              this.log(`⚠️ Producto variable "${p.name}" no tiene variaciones activas en WooCommerce. Omitiendo.`, 'warn');
+              this.stats.productsSkipped++;
+              continue;
+            }
+
+            // Buscar si ya existe en Shopify por SKU de alguna variación o por título
+            let matchedShopifyProd = titleToProduct.get(normTitle) || null;
+            if (!matchedShopifyProd) {
+              for (const wv of activeVars) {
+                const vSku = (wv.sku || '').trim().toLowerCase();
+                if (vSku && skuToVariant.has(vSku)) {
+                  matchedShopifyProd = skuToVariant.get(vSku).product;
+                  break;
+                }
+              }
+            }
+
+            // Verificar si el producto existe y ya tiene sus variaciones en Shopify
+            if (matchedShopifyProd && matchedShopifyProd.variants.length > 1) {
+              // Asegurar que todas sus variantes tengan Precios 2 y 3 (y actualizar si se solicitó)
+              const metafieldsToSet = [];
+              let firstTierPrices = null;
+
+              for (const wv of activeVars) {
+                const vSku = (wv.sku || '').trim().toLowerCase();
+                const tierPrices = this.extractTierPrices(wv.meta_data, p.meta_data);
+                if (!firstTierPrices && (tierPrices.price_2 || tierPrices.price_3)) {
+                  firstTierPrices = tierPrices;
+                }
+
+                const shopifyVar = matchedShopifyProd.variants.find(sv =>
+                  (vSku && (sv.sku || '').trim().toLowerCase() === vSku)
+                );
+
+                if (shopifyVar) {
+                  const existingMetaEdges = shopifyVar.metafields?.edges || [];
+                  const hasPrice2 = existingMetaEdges.some(e => e.node?.key === 'price_2' && e.node?.value);
+                  const hasPrice3 = existingMetaEdges.some(e => e.node?.key === 'price_3' && e.node?.value);
+
+                  if (!hasPrice2 || !hasPrice3 || onExisting !== 'skip') {
+                    metafieldsToSet.push(...this.buildGraphqlMetafields(shopifyVar.id, tierPrices));
+                  }
+
+                  if (onExisting === 'update_stock_price' || onExisting === 'update_all') {
+                    const newPrice = wv.price || wv.regular_price || p.price || '0.00';
+                    await this.shopify.updateVariant(shopifyVar.legacyResourceId, {
+                      price: newPrice,
+                      compare_at_price: (wv.sale_price && wv.regular_price && wv.sale_price !== wv.regular_price) ? wv.regular_price : null
+                    });
+                  }
+                }
+              }
+
+              if (firstTierPrices && matchedShopifyProd.id) {
+                metafieldsToSet.push(...this.buildGraphqlMetafields(matchedShopifyProd.id, firstTierPrices));
+              }
+
+              if (metafieldsToSet.length > 0) {
+                await this.shopify.setMetafieldsBatch(metafieldsToSet);
+              }
+
+              if (onExisting === 'skip') {
+                this.stats.productsSkipped++;
+                this.log(`⏭️ [OMITIDO] Producto variable "${p.name}" (${activeVars.length} variaciones) ya existe en Shopify.${metafieldsToSet.length > 0 ? ' (Precios 2/3 sincronizados)' : ''}`, 'info');
+              } else {
+                this.stats.productsUpdated++;
+                totalUpdated++;
+                this.log(`🔄 [ACTUALIZADO] Producto variable "${p.name}" (${activeVars.length} variaciones + Precios 2/3) actualizado en Shopify.`);
+              }
+              continue;
+            }
+
+            // Si no existe (o estaba incompleto como simple de 1 variante cuando en Woo tiene múltiples variaciones)
+            if (!matchedShopifyProd && onMissing === 'skip') {
+              this.stats.productsSkipped++;
+              this.log(`⏭️ [OMITIDO] Producto variable "${p.name}" no existe en destino y se configuró omitir.`, 'info');
+              continue;
+            }
+
+            // Si había una publicación simple incompleta con el mismo título/SKU, eliminarla para recrearla con todas sus variaciones
+            if (matchedShopifyProd && matchedShopifyProd.variants.length <= 1 && activeVars.length > 1) {
+              try {
+                await this.shopify.deleteProduct(matchedShopifyProd.numericId);
+                this.log(`♻️ Reemplazando publicación simple incompleta de "${p.name}" por publicación con ${activeVars.length} variaciones...`);
+              } catch (delErr) {}
+            }
+
+            // Construir opciones de producto en Shopify (máximo 3 opciones soportadas por Shopify)
+            const variationAttrs = (p.attributes || []).filter(a => a.variation).slice(0, 3);
+            const optionNames = variationAttrs.length > 0
+              ? variationAttrs.map(a => a.name || 'Opción')
+              : ['Opción'];
+
+            const usedOptionKeys = new Set();
+            const variantsPayload = [];
+            let productTierPrices = null;
+
+            // Ordenar variaciones en orden inverso o por menu_order para mantener el orden natural de WooCommerce
+            const orderedVars = [...activeVars].reverse();
+
+            for (let idx = 0; idx < orderedVars.length; idx++) {
+              const wv = orderedVars[idx];
+              const vAttrs = Array.isArray(wv.attributes) ? wv.attributes : [];
+              const optValues = optionNames.map((optName, optIdx) => {
+                const found = vAttrs.find(a =>
+                  (a.name && a.name.toLowerCase() === optName.toLowerCase()) ||
+                  (variationAttrs[optIdx] && a.slug === variationAttrs[optIdx].slug)
+                ) || vAttrs[optIdx];
+                return (found && found.option) ? String(found.option).trim() : `${wv.sku || 'Variante'} #${idx + 1}`;
+              });
+
+              let optKey = optValues.join('||').toLowerCase();
+              if (usedOptionKeys.has(optKey)) {
+                optValues[0] = `${optValues[0]} (${wv.sku || idx + 1})`;
+                optKey = optValues.join('||').toLowerCase();
+              }
+              usedOptionKeys.add(optKey);
+
+              const vSku = (wv.sku || '').trim();
+              const vStock = wv.stock_quantity != null ? Math.max(0, wv.stock_quantity) : 0;
+              const vPrice = wv.price || wv.regular_price || p.price || '0.00';
+              const vCompare = (wv.sale_price && wv.regular_price && wv.sale_price !== wv.regular_price) ? wv.regular_price : null;
+              const tierPrices = this.extractTierPrices(wv.meta_data, p.meta_data);
+
+              if (!productTierPrices && (tierPrices.price_2 || tierPrices.price_3)) {
+                productTierPrices = tierPrices;
+              }
+
+              if (wv.image && wv.image.src && !formattedImages.some(img => img.src === wv.image.src)) {
+                formattedImages.push({ src: wv.image.src });
+              }
+
+              const varObj = {
+                option1: optValues[0] || `Opción ${idx + 1}`,
+                price: vPrice,
+                compare_at_price: vCompare,
+                sku: vSku,
+                inventory_management: 'shopify',
+                inventory_quantity: vStock,
+                metafields: this.buildRestMetafields(tierPrices)
+              };
+              if (optValues[1]) varObj.option2 = optValues[1];
+              if (optValues[2]) varObj.option3 = optValues[2];
+
+              variantsPayload.push(varObj);
+            }
+
+            const optionsPayload = optionNames.map((name, idx) => ({
+              name,
+              values: [...new Set(variantsPayload.map(v => v[`option${idx + 1}`]).filter(Boolean))]
+            }));
+
+            const payload = {
+              title: p.name,
+              body_html: p.description || p.short_description || p.short_desc || '',
+              vendor: vendor,
+              product_type: productType,
+              status: (p.status === 'draft' || p.status === 'pending') ? 'draft' : 'active',
+              tags: tagsList.join(', '),
+              options: optionsPayload,
+              variants: variantsPayload,
+              images: formattedImages,
+              metafields: productTierPrices ? this.buildRestMetafields(productTierPrices) : []
+            };
+
+            const createdRes = await this.shopify.createProduct(payload);
+            const createdProd = createdRes?.product;
+
+            for (const vp of variantsPayload) {
+              if (vp.sku) existingSkus.add(vp.sku.toLowerCase());
+            }
+            if (createdProd) {
+              titleToProduct.set(normTitle, {
+                id: createdProd.admin_graphql_api_id,
+                numericId: createdProd.id,
+                title: createdProd.title,
+                variants: createdProd.variants || [],
+                skus: (createdProd.variants || []).map(v => (v.sku || '').toLowerCase()).filter(Boolean)
+              });
+            }
+
+            this.stats.productsSynced++;
+            totalCreated++;
+            this.log(`✨ Producto variable creado en 1 publicación: "${p.name}" con ${variantsPayload.length} variaciones y Precios 2/3.`);
+            await this.sleep(450);
+            continue;
+          }
+
+          // ==========================================
+          // PRODUCTO SIMPLE
+          // ==========================================
+          const tierPrices = this.extractTierPrices(p.meta_data);
+          let matchedEntry = (lowerSku && skuToVariant.get(lowerSku)) ? skuToVariant.get(lowerSku) : null;
+          let matchedProd = matchedEntry ? matchedEntry.product : (titleToProduct.get(normTitle) || null);
+          let matchedVar = matchedEntry ? matchedEntry.variant : (matchedProd?.variants?.[0] || null);
+
+          let skuExists = Boolean(matchedProd);
+          if (!skuExists && lowerSku && existingSkus.has(lowerSku)) {
+            skuExists = true;
+          }
+
+          // Caso 1: El producto simple ya existe en Shopify
+          if (skuExists) {
+            // Verificar si le faltan Precios 2 y 3 en Shopify y sincronizarlos
+            if (matchedVar && (tierPrices.price_2 || tierPrices.price_3)) {
+              const existingMetaEdges = matchedVar.metafields?.edges || [];
+              const hasPrice2 = existingMetaEdges.some(e => e.node?.key === 'price_2' && e.node?.value);
+              const hasPrice3 = existingMetaEdges.some(e => e.node?.key === 'price_3' && e.node?.value);
+
+              if (!hasPrice2 || !hasPrice3 || onExisting !== 'skip') {
+                const metas = [
+                  ...this.buildGraphqlMetafields(matchedVar.id, tierPrices),
+                  ...(matchedProd?.id ? this.buildGraphqlMetafields(matchedProd.id, tierPrices) : [])
+                ];
+                if (metas.length > 0) {
+                  await this.shopify.setMetafieldsBatch(metas);
+                }
+              }
+            }
+
+            if (onExisting === 'skip') {
+              this.stats.productsSkipped++;
+              this.log(`⏭️ [OMITIDO] Producto "${p.name}" (SKU: "${rawSku}") ya existe en Shopify.`, 'info');
+              continue;
+            }
+
+            // Actualizar precio en Shopify si se eligió actualizar
+            if (matchedVar?.legacyResourceId) {
+              const newPrice = p.price || p.regular_price || '0.00';
+              await this.shopify.updateVariant(matchedVar.legacyResourceId, {
+                price: newPrice,
+                compare_at_price: (p.sale_price && p.regular_price && p.sale_price !== p.regular_price) ? p.regular_price : null
+              });
+            }
+
+            this.stats.productsUpdated++;
+            totalUpdated++;
+            this.log(`🔄 [ACTUALIZADO] Producto "${p.name}" (SKU: "${rawSku}") actualizado con Precios 1, 2 y 3 en Shopify.`);
+            continue;
+          }
+
+          // Caso 2: El producto simple NO existe en Shopify
+          if (onMissing === 'skip') {
+            this.stats.productsSkipped++;
+            this.log(`⏭️ [OMITIDO] Producto "${p.name}" no existe en destino y se configuró omitir no existentes.`, 'info');
+            continue;
+          }
+
+          const stockQty = p.stock_quantity != null ? Math.max(0, p.stock_quantity) : (p.stock != null ? Math.max(0, p.stock) : 0);
+          const restMetafields = this.buildRestMetafields(tierPrices);
+
           const payload = {
             title: p.name,
             body_html: p.description || p.short_description || p.short_desc || '',
@@ -468,12 +774,14 @@ class SyncManager {
             product_type: productType,
             status: (p.status === 'draft' || p.status === 'pending') ? 'draft' : 'active',
             tags: tagsList.join(', '),
+            metafields: restMetafields,
             variants: [{
               price: p.price || p.regular_price || '0.00',
               compare_at_price: (p.sale_price && p.regular_price && p.sale_price !== p.regular_price) ? p.regular_price : null,
               sku: rawSku,
               inventory_management: 'shopify',
-              inventory_quantity: stockQty
+              inventory_quantity: stockQty,
+              metafields: restMetafields
             }],
             images: formattedImages
           };
@@ -482,7 +790,7 @@ class SyncManager {
           if (lowerSku) existingSkus.add(lowerSku);
           this.stats.productsSynced++;
           totalCreated++;
-          this.log(`✨ Producto nuevo transferido: ${p.name} (SKU: ${rawSku || 'Sin SKU'}) - $${p.price || p.regular_price || 0}`);
+          this.log(`✨ Producto nuevo transferido: ${p.name} (SKU: ${rawSku || 'Sin SKU'}) - $${p.price || p.regular_price || 0} (P2: ${tierPrices.price_2 || '-'}, P3: ${tierPrices.price_3 || '-'})`);
         } catch (err) {
           this.log(`Error al transferir producto ${p.name}: ${err.message}`, 'error');
           this.stats.errorsCount++;
@@ -727,15 +1035,36 @@ class SyncManager {
         return;
       }
 
-      // 3. Comparar para encontrar huérfanos
-      this.log('Paso 3/3: Comparando catálogos para identificar productos huérfanos...');
+      // 3. Comparar para encontrar huérfanos y publicaciones duplicadas
+      this.log('Paso 3/3: Comparando catálogos para identificar productos huérfanos o duplicados...');
       const orphans = [];
       const matched = [];
+
+      // Agrupar por título normalizado para detectar copias duplicadas (conservar la que tenga más variantes o SKUs)
+      const bestByTitle = new Map();
+      for (const sp of shopifyProducts) {
+        const normTitle = (sp.title || '').trim().toLowerCase();
+        const currentBest = bestByTitle.get(normTitle);
+        if (
+          !currentBest ||
+          sp.variants.length > currentBest.variants.length ||
+          (sp.variants.length === currentBest.variants.length && sp.skus.length > currentBest.skus.length)
+        ) {
+          bestByTitle.set(normTitle, sp);
+        }
+      }
 
       for (const sp of shopifyProducts) {
         const hasMatchingSku = sp.skus.some(sku => wooSkus.has(sku));
         const normTitle = (sp.title || '').trim().toLowerCase();
         const hasMatchingTitle = wooTitles.has(normTitle);
+        const bestForTitle = bestByTitle.get(normTitle);
+
+        // Si es una copia duplicada inferior (ej. copia simple sin SKU de un producto que ya existe), marcarla para limpieza
+        if (bestForTitle && bestForTitle.id !== sp.id) {
+          orphans.push(sp);
+          continue;
+        }
 
         if (hasMatchingSku || hasMatchingTitle) {
           matched.push(sp);
