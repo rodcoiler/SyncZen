@@ -552,10 +552,13 @@ class SyncManager {
 
                 if (shopifyVar) {
                   const existingMetaEdges = shopifyVar.metafields?.edges || [];
-                  const hasPrice2 = existingMetaEdges.some(e => e.node?.key === 'price_2' && e.node?.value);
-                  const hasPrice3 = existingMetaEdges.some(e => e.node?.key === 'price_3' && e.node?.value);
+                  const currPrice2 = existingMetaEdges.find(e => e.node?.key === 'price_2')?.node?.value;
+                  const currPrice3 = existingMetaEdges.find(e => e.node?.key === 'price_3')?.node?.value;
 
-                  if (!hasPrice2 || !hasPrice3 || onExisting !== 'skip') {
+                  const needsPrice2Update = tierPrices.price_2 && currPrice2 !== tierPrices.price_2;
+                  const needsPrice3Update = tierPrices.price_3 && currPrice3 !== tierPrices.price_3;
+
+                  if (needsPrice2Update || needsPrice3Update || !currPrice2 || !currPrice3 || onExisting !== 'skip') {
                     metafieldsToSet.push(...this.buildGraphqlMetafields(shopifyVar.id, tierPrices));
                   }
 
@@ -611,6 +614,7 @@ class SyncManager {
 
             const usedOptionKeys = new Set();
             const variantsPayload = [];
+            const tierPricesList = [];
             let productTierPrices = null;
 
             // Ordenar variaciones en orden inverso o por menu_order para mantener el orden natural de WooCommerce
@@ -643,6 +647,7 @@ class SyncManager {
               if (!productTierPrices && (tierPrices.price_2 || tierPrices.price_3)) {
                 productTierPrices = tierPrices;
               }
+              tierPricesList.push(tierPrices);
 
               if (wv.image && wv.image.src && !formattedImages.some(img => img.src === wv.image.src)) {
                 formattedImages.push({ src: wv.image.src });
@@ -695,6 +700,24 @@ class SyncManager {
                 variants: createdProd.variants || [],
                 skus: (createdProd.variants || []).map(v => (v.sku || '').toLowerCase()).filter(Boolean)
               });
+
+              // Sincronizar metafields de precios 2 y 3 por GraphQL inmediatamente
+              const newMetas = [];
+              if (productTierPrices && createdProd.admin_graphql_api_id) {
+                newMetas.push(...this.buildGraphqlMetafields(createdProd.admin_graphql_api_id, productTierPrices));
+              }
+              const createdVars = createdProd.variants || [];
+              for (let i = 0; i < createdVars.length; i++) {
+                const cv = createdVars[i];
+                const tp = tierPricesList[i];
+                const vGid = cv.admin_graphql_api_id;
+                if (vGid && tp && (tp.price_2 || tp.price_3)) {
+                  newMetas.push(...this.buildGraphqlMetafields(vGid, tp));
+                }
+              }
+              if (newMetas.length > 0) {
+                await this.shopify.setMetafieldsBatch(newMetas);
+              }
             }
 
             this.stats.productsSynced++;
@@ -719,26 +742,31 @@ class SyncManager {
 
           // Caso 1: El producto simple ya existe en Shopify
           if (skuExists) {
-            // Verificar si le faltan Precios 2 y 3 en Shopify y sincronizarlos
+            // Verificar si le faltan Precios 2 y 3 en Shopify o si cambiaron, y sincronizarlos
+            let metafieldsUpdated = false;
             if (matchedVar && (tierPrices.price_2 || tierPrices.price_3)) {
               const existingMetaEdges = matchedVar.metafields?.edges || [];
-              const hasPrice2 = existingMetaEdges.some(e => e.node?.key === 'price_2' && e.node?.value);
-              const hasPrice3 = existingMetaEdges.some(e => e.node?.key === 'price_3' && e.node?.value);
+              const currPrice2 = existingMetaEdges.find(e => e.node?.key === 'price_2')?.node?.value;
+              const currPrice3 = existingMetaEdges.find(e => e.node?.key === 'price_3')?.node?.value;
 
-              if (!hasPrice2 || !hasPrice3 || onExisting !== 'skip') {
+              const needsPrice2Update = tierPrices.price_2 && currPrice2 !== tierPrices.price_2;
+              const needsPrice3Update = tierPrices.price_3 && currPrice3 !== tierPrices.price_3;
+
+              if (needsPrice2Update || needsPrice3Update || !currPrice2 || !currPrice3 || onExisting !== 'skip') {
                 const metas = [
                   ...this.buildGraphqlMetafields(matchedVar.id, tierPrices),
                   ...(matchedProd?.id ? this.buildGraphqlMetafields(matchedProd.id, tierPrices) : [])
                 ];
                 if (metas.length > 0) {
                   await this.shopify.setMetafieldsBatch(metas);
+                  metafieldsUpdated = true;
                 }
               }
             }
 
             if (onExisting === 'skip') {
               this.stats.productsSkipped++;
-              this.log(`⏭️ [OMITIDO] Producto "${p.name}" (SKU: "${rawSku}") ya existe en Shopify.`, 'info');
+              this.log(`⏭️ [OMITIDO] Producto "${p.name}" (SKU: "${rawSku}") ya existe en Shopify.${metafieldsUpdated ? ' (Precios 2/3 sincronizados)' : ''}`, 'info');
               continue;
             }
 
@@ -786,7 +814,21 @@ class SyncManager {
             images: formattedImages
           };
 
-          await this.shopify.createProduct(payload);
+          const createdRes = await this.shopify.createProduct(payload);
+          const createdProd = createdRes?.product;
+
+          if (createdProd && (tierPrices.price_2 || tierPrices.price_3)) {
+            const varGid = createdProd.variants?.[0]?.admin_graphql_api_id;
+            const prodGid = createdProd.admin_graphql_api_id;
+            const metas = [
+              ...(varGid ? this.buildGraphqlMetafields(varGid, tierPrices) : []),
+              ...(prodGid ? this.buildGraphqlMetafields(prodGid, tierPrices) : [])
+            ];
+            if (metas.length > 0) {
+              await this.shopify.setMetafieldsBatch(metas);
+            }
+          }
+
           if (lowerSku) existingSkus.add(lowerSku);
           this.stats.productsSynced++;
           totalCreated++;
