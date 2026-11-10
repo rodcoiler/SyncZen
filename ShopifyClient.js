@@ -264,6 +264,9 @@ class ShopifyClient {
                       title
                       price
                       inventoryQuantity
+                      inventoryItem {
+                        id
+                      }
                       metafields(first: 10, namespace: "dumashe") {
                         edges {
                           node {
@@ -379,6 +382,77 @@ class ShopifyClient {
         console.warn('[ShopifyClient] Errores en metafieldsSet:', JSON.stringify(errors));
       }
       if (i + 25 < metafields.length) {
+        await this.sleep(200);
+      }
+    }
+  }
+
+  async getPrimaryLocationId() {
+    if (this.defaultLocationId) return this.defaultLocationId;
+    const query = `
+      query {
+        productVariants(first: 1) {
+          edges {
+            node {
+              inventoryItem {
+                inventoryLevels(first: 1) {
+                  edges {
+                    node {
+                      location {
+                        id
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+    try {
+      const res = await this.graphql(query);
+      const locId = res?.data?.productVariants?.edges?.[0]?.node?.inventoryItem?.inventoryLevels?.edges?.[0]?.node?.location?.id;
+      if (locId) {
+        this.defaultLocationId = locId;
+      }
+    } catch (err) {
+      console.warn('[ShopifyClient] Error al consultar ubicación principal:', err.message);
+    }
+    return this.defaultLocationId;
+  }
+
+  async setInventoryQuantities(quantities = []) {
+    if (!Array.isArray(quantities) || quantities.length === 0) return;
+    const mutation = `
+      mutation inventorySetQuantities($input: InventorySetQuantitiesInput!) {
+        inventorySetQuantities(input: $input) {
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `;
+    for (let i = 0; i < quantities.length; i += 50) {
+      const chunk = quantities.slice(i, i + 50);
+      try {
+        const res = await this.graphql(mutation, {
+          input: {
+            name: 'available',
+            reason: 'correction',
+            ignoreCompareQuantity: true,
+            quantities: chunk
+          }
+        });
+        const errs = res?.data?.inventorySetQuantities?.userErrors || [];
+        if (errs.length > 0) {
+          console.warn('[ShopifyClient] Errores en inventorySetQuantities:', JSON.stringify(errs));
+        }
+      } catch (err) {
+        console.warn('[ShopifyClient] Excepción en inventorySetQuantities:', err.message);
+      }
+      if (i + 50 < quantities.length) {
         await this.sleep(200);
       }
     }

@@ -583,8 +583,8 @@
           <div class="date-group" style="flex-direction: column; align-items: flex-start; gap: 4px;">
             <label style="font-size: 11px; font-weight: 700; color: var(--text-muted);">Si ya existe en destino (por SKU):</label>
             <select id="syncOnExisting" class="form-control">
-              <option value="skip" selected>Omitir (No duplicar ni tocar)</option>
-              <option value="update_stock_price">Actualizar solo Precio y Stock</option>
+              <option value="update_stock_price" selected>Actualizar Precio y Stock (Recomendado)</option>
+              <option value="skip">Omitir (No duplicar ni tocar)</option>
               <option value="update_all">Actualizar Todo (Título, Precio, etc.)</option>
             </select>
           </div>
@@ -900,7 +900,7 @@
       const direction = document.getElementById('syncDirection') ? document.getElementById('syncDirection').value : 'woo_to_shopify';
       const productStatus = document.getElementById('syncProductStatus') ? document.getElementById('syncProductStatus').value : 'publish';
       const orderStatus = document.getElementById('syncOrderStatus') ? document.getElementById('syncOrderStatus').value : 'active';
-      const onExisting = document.getElementById('syncOnExisting') ? document.getElementById('syncOnExisting').value : 'skip';
+      const onExisting = document.getElementById('syncOnExisting') ? document.getElementById('syncOnExisting').value : 'update_stock_price';
       const onMissing = document.getElementById('syncOnMissing') ? document.getElementById('syncOnMissing').value : 'create';
 
       return {

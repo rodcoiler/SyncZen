@@ -422,11 +422,18 @@ class SyncManager {
     }
 
     const productStatus = options.productStatus || 'publish'; // 'publish', 'any', 'draft'
-    const onExisting = options.onExisting || 'skip'; // 'skip', 'update_stock_price', 'update_all'
+    const onExisting = options.onExisting || 'update_stock_price'; // 'update_stock_price', 'skip', 'update_all'
     const onMissing = options.onMissing || 'create'; // 'create', 'skip'
 
     this.log(`Iniciando sincronización de productos WooCommerce ➔ Shopify [${storeName}]...`);
     this.log(`Configuración: Estado origen = "${productStatus}", Si ya existe = "${onExisting}", Si no existe = "${onMissing}"`);
+
+    let primaryLocationId = null;
+    try {
+      primaryLocationId = await this.shopify.getPrimaryLocationId();
+    } catch (locErr) {
+      this.log(`Aviso al obtener ubicación de inventario: ${locErr.message}`, 'warn');
+    }
 
     // 1. Cargar índice completo de productos, variantes, SKUs y títulos de Shopify
     this.log('🔍 Analizando catálogo existente en Shopify (SKUs, variaciones y precios 2/3)...');
@@ -537,6 +544,7 @@ class SyncManager {
             if (matchedShopifyProd && matchedShopifyProd.variants.length > 1) {
               // Asegurar que todas sus variantes tengan Precios 2 y 3 (y actualizar si se solicitó)
               const metafieldsToSet = [];
+              const inventoryUpdates = [];
               let firstTierPrices = null;
 
               for (const wv of activeVars) {
@@ -568,6 +576,15 @@ class SyncManager {
                       price: newPrice,
                       compare_at_price: (wv.sale_price && wv.regular_price && wv.sale_price !== wv.regular_price) ? wv.regular_price : null
                     });
+
+                    const stockQty = wv.stock_quantity != null ? wv.stock_quantity : (wv.stock != null ? wv.stock : null);
+                    if (primaryLocationId && shopifyVar.inventoryItem?.id && stockQty != null) {
+                      inventoryUpdates.push({
+                        inventoryItemId: shopifyVar.inventoryItem.id,
+                        locationId: primaryLocationId,
+                        quantity: Math.max(0, parseInt(stockQty, 10) || 0)
+                      });
+                    }
                   }
                 }
               }
@@ -580,13 +597,17 @@ class SyncManager {
                 await this.shopify.setMetafieldsBatch(metafieldsToSet);
               }
 
+              if (inventoryUpdates.length > 0) {
+                await this.shopify.setInventoryQuantities(inventoryUpdates);
+              }
+
               if (onExisting === 'skip') {
                 this.stats.productsSkipped++;
                 this.log(`⏭️ [OMITIDO] Producto variable "${p.name}" (${activeVars.length} variaciones) ya existe en Shopify.${metafieldsToSet.length > 0 ? ' (Precios 2/3 sincronizados)' : ''}`, 'info');
               } else {
                 this.stats.productsUpdated++;
                 totalUpdated++;
-                this.log(`🔄 [ACTUALIZADO] Producto variable "${p.name}" (${activeVars.length} variaciones + Precios 2/3) actualizado en Shopify.`);
+                this.log(`🔄 [ACTUALIZADO] Producto variable "${p.name}" (${activeVars.length} variaciones): Stock y Precios 1, 2 y 3 actualizados en Shopify.`);
               }
               continue;
             }
@@ -770,18 +791,27 @@ class SyncManager {
               continue;
             }
 
-            // Actualizar precio en Shopify si se eligió actualizar
+            // Actualizar precio y stock en Shopify si se eligió actualizar
             if (matchedVar?.legacyResourceId) {
               const newPrice = p.price || p.regular_price || '0.00';
               await this.shopify.updateVariant(matchedVar.legacyResourceId, {
                 price: newPrice,
                 compare_at_price: (p.sale_price && p.regular_price && p.sale_price !== p.regular_price) ? p.regular_price : null
               });
+
+              const stockQty = p.stock_quantity != null ? p.stock_quantity : (p.stock != null ? p.stock : null);
+              if (primaryLocationId && matchedVar.inventoryItem?.id && stockQty != null) {
+                await this.shopify.setInventoryQuantities([{
+                  inventoryItemId: matchedVar.inventoryItem.id,
+                  locationId: primaryLocationId,
+                  quantity: Math.max(0, parseInt(stockQty, 10) || 0)
+                }]);
+              }
             }
 
             this.stats.productsUpdated++;
             totalUpdated++;
-            this.log(`🔄 [ACTUALIZADO] Producto "${p.name}" (SKU: "${rawSku}") actualizado con Precios 1, 2 y 3 en Shopify.`);
+            this.log(`🔄 [ACTUALIZADO] Producto "${p.name}" (SKU: "${rawSku}") actualizado con Stock y Precios 1, 2 y 3 en Shopify.`);
             continue;
           }
 
