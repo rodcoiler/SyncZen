@@ -595,6 +595,15 @@
               <option value="skip">Omitir (No crear productos nuevos)</option>
             </select>
           </div>
+          <div class="date-group" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+            <label style="font-size: 11px; font-weight: 700; color: var(--text-muted);">Espejo exacto (Eliminar si no existe en origen):</label>
+            <select id="syncDeleteOrphans" class="form-control">
+              <option value="delete" selected>Eliminar de Shopify si no existe en WooCommerce (Espejo exacto)</option>
+              <option value="no">Conservar en Shopify (No eliminar nada)</option>
+              <option value="archive">Archivar en Shopify</option>
+              <option value="draft">Poner en Borrador en Shopify</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -902,6 +911,7 @@
       const orderStatus = document.getElementById('syncOrderStatus') ? document.getElementById('syncOrderStatus').value : 'active';
       const onExisting = document.getElementById('syncOnExisting') ? document.getElementById('syncOnExisting').value : 'update_stock_price';
       const onMissing = document.getElementById('syncOnMissing') ? document.getElementById('syncOnMissing').value : 'create';
+      const deleteOrphans = document.getElementById('syncDeleteOrphans') ? document.getElementById('syncDeleteOrphans').value : 'delete';
 
       return {
         startDate: startDate ? `${startDate}T00:00:00` : null,
@@ -910,7 +920,8 @@
         productStatus,
         orderStatus,
         onExisting,
-        onMissing
+        onMissing,
+        deleteOrphans
       };
     }
 

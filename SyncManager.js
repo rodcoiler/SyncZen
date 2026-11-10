@@ -875,6 +875,19 @@ class SyncManager {
     }
 
     this.log(`Sincronización de productos completada. Creados: ${totalCreated}, Actualizados: ${totalUpdated}, Omitidos: ${this.stats.productsSkipped}`);
+
+    // Limpieza de huérfanos si se solicitó espejo exacto (eliminar o archivar los no existentes en WooCommerce)
+    const deleteOrphans = options.deleteOrphans || options.syncDeleteOrphans;
+    if (deleteOrphans && deleteOrphans !== 'no' && !this.stopRequested) {
+      this.log(`🧹 [ESPEJO EXACTO] Analizando y eliminando productos de Shopify que no existen en WooCommerce (${deleteOrphans.toUpperCase()})...`);
+      await this.cleanupOrphanProducts({
+        internal: true,
+        dryRun: false,
+        actionType: deleteOrphans,
+        status: productStatus
+      });
+    }
+
     return totalCreated;
   }
 
@@ -1071,18 +1084,22 @@ class SyncManager {
   // (Eliminar productos de Shopify que no existen en WooCommerce)
   // ==========================================
   async cleanupOrphanProducts(options = {}) {
-    if (this.isRunning) {
+    if (this.isRunning && !options.internal) {
       this.log('Ya existe un proceso de sincronización activo', 'warn');
       return;
+    }
+
+    const isTopLevel = !this.isRunning;
+    if (isTopLevel) {
+      this.isRunning = true;
+      this.stopRequested = false;
+      this.stats.status = 'running';
     }
 
     const dryRun = options.dryRun !== false; // Por defecto modo simulación para seguridad
     const actionType = options.actionType || 'delete'; // 'delete', 'archive', 'draft'
     const status = options.status || 'any'; // Estado en WooCommerce
 
-    this.isRunning = true;
-    this.stopRequested = false;
-    this.stats.status = 'running';
     this.stats.currentTask = 'Limpieza de Huérfanos';
     this.log(`=== INICIO DE ANÁLISIS DE PRODUCTOS HUÉRFANOS [${dryRun ? 'MODO SIMULACIÓN' : 'MODO ACCIÓN: ' + actionType.toUpperCase()}] ===`);
 
@@ -1127,7 +1144,8 @@ class SyncManager {
       }
 
       for (const sp of shopifyProducts) {
-        const hasMatchingSku = sp.skus.some(sku => wooSkus.has(sku));
+        const hasSkus = sp.skus.length > 0;
+        const hasMatchingSku = hasSkus && sp.skus.some(sku => wooSkus.has(sku));
         const normTitle = (sp.title || '').trim().toLowerCase();
         const hasMatchingTitle = wooTitles.has(normTitle);
         const bestForTitle = bestByTitle.get(normTitle);
@@ -1138,7 +1156,8 @@ class SyncManager {
           continue;
         }
 
-        if (hasMatchingSku || hasMatchingTitle) {
+        // Si tiene SKU, al menos un SKU debe existir en WooCommerce. Si no tiene SKU, debe coincidir el título exacto
+        if (hasMatchingSku || (!hasSkus && hasMatchingTitle)) {
           matched.push(sp);
         } else {
           orphans.push(sp);
@@ -1209,9 +1228,11 @@ class SyncManager {
       this.stats.status = 'error';
       this.log(`Fallo general en la limpieza de huérfanos: ${err.message}`, 'error');
     } finally {
-      this.isRunning = false;
-      this.stopRequested = false;
-      this.stats.currentTask = null;
+      if (isTopLevel) {
+        this.isRunning = false;
+        this.stopRequested = false;
+        this.stats.currentTask = null;
+      }
     }
   }
 
@@ -1410,9 +1431,11 @@ class SyncManager {
       this.stats.status = 'error';
       this.log(`Fallo general en la sincronización: ${err.message}`, 'error');
     } finally {
-      this.isRunning = false;
-      this.stopRequested = false;
-      this.stats.currentTask = null;
+      if (isTopLevel) {
+        this.isRunning = false;
+        this.stopRequested = false;
+        this.stats.currentTask = null;
+      }
     }
   }
 
@@ -1460,9 +1483,11 @@ class SyncManager {
       this.stats.status = 'error';
       this.log(`Fallo general en la sincronización: ${err.message}`, 'error');
     } finally {
-      this.isRunning = false;
-      this.stopRequested = false;
-      this.stats.currentTask = null;
+      if (isTopLevel) {
+        this.isRunning = false;
+        this.stopRequested = false;
+        this.stats.currentTask = null;
+      }
     }
   }
 }

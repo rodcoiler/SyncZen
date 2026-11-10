@@ -59,7 +59,10 @@ if (cronSchedule) {
   cron.schedule(cronSchedule, () => {
     console.log(`[CRON] Disparando sincronización automática: ${cronSchedule}`);
     if (syncManager && !syncManager.isRunning) {
-      syncManager.runFullSync().catch(err => console.error(err));
+      syncManager.runFullSync({
+        onExisting: 'update_stock_price',
+        deleteOrphans: process.env.CRON_DELETE_ORPHANS || 'delete'
+      }).catch(err => console.error(err));
     }
   });
 }
